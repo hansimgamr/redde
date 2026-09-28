@@ -13,14 +13,11 @@ struct CronView: View {
     @State private var toast: String?
     /// Resolved once per screen and again on each refresh, not on every body pass.
     @State private var backend = CronBackend.current()
-    /// The conversation list's server and section switch, scrolling with the jobs.
-    var topRow: AnyView?
-    /// The iPhone's panel is out: it stays built while closed, so this is when to reload.
+    /// Refresh when the Cron tab becomes visible.
     var isShowing = true
 
     var body: some View {
         List {
-            if let topRow { topRow }
             if backend == nil {
                 ContentUnavailableView("No gateway configured", systemImage: "clock.badge.questionmark",
                                        description: Text("Cron jobs live on the Hermes gateway. Set up the Hermes Dashboard or the Hermes API in Settings."))
@@ -61,7 +58,7 @@ struct CronView: View {
         .listStyle(.plain)
         .toast($toast)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarTrailing) {
                 if backend?.supportsBlueprints == true {
                     Menu("New", systemImage: "plus") {
                         Button("New job", systemImage: "square.and.pencil") { creating = true }
@@ -72,9 +69,8 @@ struct CronView: View {
                 }
             }
         }
-        .task { await refresh() }
+        .task(id: isShowing) { if isShowing { await refresh() } }
         .refreshable { await refresh() }
-        .onChange(of: isShowing) { _, showing in if showing { Task { await refresh() } } }
         .sheet(isPresented: $creating) { CronJobEditor(job: nil) { await refresh() } }
         .sheet(isPresented: $browsingBlueprints) { if let backend { BlueprintBrowser(backend: backend) { await refresh() } } }
         .sheet(item: $editing) { job in CronJobEditor(job: job) { await refresh() } }

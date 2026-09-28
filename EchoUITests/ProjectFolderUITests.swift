@@ -9,7 +9,7 @@ final class ProjectFolderUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-echo.demoProjects", "-setupDone", "YES", "-openToVoiceScreen", "NO",
-                               "-listenOnOpen", "NO", "-requireBiometrics", "NO"]
+                               "-listenOnOpen", "NO", "-requireBiometrics", "NO", "-echo.screen", "sessions"]
         app.launch()
         return app
     }

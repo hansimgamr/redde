@@ -12,8 +12,8 @@ import Foundation
 /// - `-echo.demoProjects`: fill the conversation list's Projects from a fixture (Dashboard connection).
 /// - `-echo.demoHosts`: replace any real endpoints with example hosts.
 /// - `-echo.demoKanban`: a sample Kanban board instead of the server's.
-/// - `-echo.screen settings|sessions|setup|profiles|servers|model|tips`: open that screen at launch.
-/// - `-echo.section cron|kanban`: open the conversation list on that tab.
+/// - `-echo.screen chat|settings|sessions|setup|profiles|servers|model|tips`: open that screen at launch.
+/// - `-echo.section cron|kanban`: open the corresponding app tab.
 /// - `-echo.settingsAnchor`: scroll Settings to the context and memory files.
 /// - `-echo.expandAppIcons`: open Settings' app icon grid.
 /// - `-echo.draft "text"`: type a question into a focused composer (keyboard screenshots).

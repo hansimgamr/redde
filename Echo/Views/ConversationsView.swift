@@ -2,17 +2,13 @@ import SwiftUI
 
 /// Previous sessions. With the ledger transport this is Hermes's own session list, every
 /// platform included. Tap to resume, swipe to delete.
-/// The iPhone's panel from the left (opening a conversation closes it). On iPad the list lives
-/// in the split view's sidebar instead.
+/// Pushed from the transcript on iPhone; shown in the split view sidebar on iPad.
 struct ConversationsView: View {
-    /// The panel stays built while closed, so it slides in without a hitch; this says whether
-    /// it's out.
     var isShowing: Bool
     var onOpened: () -> Void
+    var onOpenSettings: () -> Void = {}
     var body: some View {
-        NavigationStack {
-            ConversationsList(onOpened: onOpened, isShowing: isShowing)
-        }
+        ConversationsList(onOpened: onOpened, onOpenSettings: onOpenSettings, isShowing: isShowing)
     }
 }
 
@@ -23,13 +19,12 @@ private struct ProjectRoute: Hashable {
 }
 
 struct ConversationsList: View {
-    /// What to do after a session opens: the iPhone's panel closes; the iPad sidebar stays put.
+    /// Return to the transcript on iPhone; the iPad sidebar stays put.
     var onOpened: () -> Void = {}
-    /// False while the iPhone's panel is closed: Chats and Cron refresh when it opens again.
-    /// (The Kanban board and its live socket go away once the panel has slid out: `panelParked`.)
+    var onOpenSettings: () -> Void = {}
+    /// Refresh when this list becomes visible.
     var isShowing = true
     @Environment(Conversation.self) private var conversation
-    @Environment(\.sidePanelParked) private var panelParked
     @State private var store = ConversationStore.shared
     @State private var settings = Settings.shared
     @State private var ledger: [HermesSessionsAPI.SessionSummary] = []
@@ -46,7 +41,6 @@ struct ConversationsList: View {
     @State private var selecting = false
     @State private var selected: Set<String> = []
     @State private var confirmBulkDelete = false
-    @State private var showSettings = false
     /// Pinned first, then most recent; filtered by the search field. Cached: the body reads it
     /// several times per pass and every keystroke in the search field would repeat the sort.
     @State private var visibleLedger: [HermesSessionsAPI.SessionSummary] = []
@@ -54,49 +48,21 @@ struct ConversationsList: View {
     private var usesLedger: Bool { settings.transport.hasLedger }
     private var viaServe: Bool { settings.transport == .hermesServe }
 
-    /// Sessions, scheduled jobs, or the kanban board; the latter two live on the gateway.
-    enum Tab: String, CaseIterable, Identifiable {
-        case sessions, cron, kanban
-        var id: String { rawValue }
-        var title: String { switch self { case .sessions: "Chats"; case .cron: "Cron"; case .kanban: "Kanban" } }
-        var icon: String { switch self { case .sessions: "bubble.left.and.bubble.right"; case .cron: "clock"; case .kanban: "rectangle.split.3x1" } }
-    }
-    @State private var section: Tab = Self.initialSection
-
-    /// Dev hook: `-echo.section cron|kanban` opens the list on that tab (screenshots).
-    private static var initialSection: Tab {
-        #if DEBUG
-        if let tab = DevHooks.value("-echo.section").flatMap(Tab.init(rawValue:)) { return tab }
-        #endif
-        return .sessions
-    }
-
     var body: some View {
-        Group {
-            switch section {
-            case .sessions: sessionsList
-            // Rebuilt on a server or profile switch, so nothing (or no live socket) carries over.
-            case .cron: CronView(topRow: AnyView(topRow), isShowing: isShowing).id(settings.connectionKey)
-            case .kanban:
-                // Gone once the panel has slid out (not as it starts to), taking its live socket along.
-                if !panelParked { KanbanView(topRow: AnyView(topRow)).id(settings.connectionKey) } else { Color.clear }
+        sessionsList
+            .navigationTitle("Conversations")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if !selecting, !visibleIDs.isEmpty {
+                        Menu {
+                            Button("Select conversations", systemImage: "checkmark.circle") { selecting = true }
+                        } label: {
+                            Label("More", systemImage: "ellipsis")
+                        }
+                    }
+                }
             }
-        }
-        // From inside the navigation stack: hiding the whole panel doesn't reach UIKit's list,
-        // and VoiceOver could swipe into rows parked off screen.
-        .accessibilityHidden(panelParked)
-        .navigationTitle(section == .sessions ? "Conversations" : section.title)
-        .toolbarVisibility(panelParked ? .hidden : .automatic, for: .navigationBar)
-        .navigationBarTitleDisplayMode(section == .sessions ? .large : .inline)
-        .sheet(isPresented: $showSettings) { SettingsView() }
-        .background {
-            Group {
-                Button("Sessions") { section = .sessions }.keyboardShortcut("1", modifiers: .command)
-                Button("Cron") { section = .cron }.keyboardShortcut("2", modifiers: .command)
-                Button("Kanban") { section = .kanban }.keyboardShortcut("3", modifiers: .command)
-            }
-            .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
-        }
     }
 
     /// Switch servers without going through Settings.
@@ -120,35 +86,19 @@ struct ConversationsList: View {
         .accessibilityValue(settings.activeServer?.title ?? "")
     }
 
-    /// The server switch (once there's more than one) and Chats, Cron and Kanban, as the first
-    /// row of whichever list is showing: they move with it when you pull to refresh or scroll.
-    /// Full width: in the bar, next to Settings, Select and New, they were squeezed to "Kanb…".
-    private var topRow: some View {
-        VStack(spacing: 8) {
-            // Not on the OpenAI-compatible connection, which belongs to no server (as in Settings).
-            if settings.servers.count > 1, settings.transport != .chatCompletions { serverMenu }
-            sectionPicker
-        }
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .selectionDisabled()
-        .accessibilityHidden(panelParked)   // UIKit's segmented control ignores it from further out
-    }
-
-    private var sectionPicker: some View {
-        Picker("Section", selection: $section) {
-            ForEach(Tab.allCases) { s in Text(s.title).tag(s) }
-        }
-        .pickerStyle(.segmented)
-    }
-
     private var sessionsList: some View {
         // The selection binding belongs to "Select" mode only. A sidebar List that always has
         // one treats a row tap as selection and swallows the NavigationLink, so project folders
         // never push on iPad.
         List(selection: selecting ? $selected : nil) {
-            topRow
+            // The OpenAI-compatible connection belongs to no server.
+            if settings.servers.count > 1, settings.transport != .chatCompletions {
+                serverMenu
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .selectionDisabled()
+            }
             if usesLedger {
                 if viaServe, !projects.isEmpty, query.isEmpty, !selecting { projectsSection }
                 ledgerSection
@@ -164,23 +114,13 @@ struct ConversationsList: View {
         }
         .environment(\.editMode, .constant(selecting ? .active : .inactive))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                if selecting {
-                    Button("Cancel") { selecting = false; selected = [] }
-                } else {
-                    Button("Settings", systemImage: "gearshape") { showSettings = true }
-                        .keyboardShortcut(",", modifiers: .command)
-                }
-            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if selecting {
+                    Button("Cancel") { selecting = false; selected = [] }
                     Button(selected.count == visibleIDs.count ? "Deselect all" : "Select all") {
                         selected = selected.count == visibleIDs.count ? [] : visibleIDs
                     }
                 } else {
-                    if !visibleIDs.isEmpty {
-                        Button("Select", systemImage: "checkmark.circle") { selecting = true }
-                    }
                     Button("New conversation", systemImage: "square.and.pencil") {
                         conversation.reset()
                         onOpened()
@@ -207,7 +147,7 @@ struct ConversationsList: View {
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search conversations")
         // Keyed on the server and profile: a switch reloads the list (and the iPad sidebar,
         // which stays up).
-        // Not while the iPhone's panel is closed: it loads when it opens (isShowing below).
+        // Reload when the list becomes visible (isShowing below).
         .task(id: settings.connectionKey) { if usesLedger, isShowing { await refresh() } }
         .onChange(of: settings.connectionKey) {
             // The old server's or profile's sessions must not linger while the new list loads.
@@ -248,25 +188,8 @@ struct ConversationsList: View {
         Section {
             if showProjects {
             ForEach(projects) { project in
-                // Value-based: a destination-based link in a split view's sidebar resolves
-                // against the detail column instead of the sidebar's own stack, which pushed
-                // the folder over the transcript with no way back.
-                NavigationLink(value: ProjectRoute(id: project.id)) {
-                    HStack(spacing: 12) {
-                        Image(systemName: project.isHome ? "house.fill" : "folder.fill")
-                            .foregroundStyle(project.isHome ? Color.orange : Settings.shared.resolvedTheme.accent)
-                            .frame(width: 28, height: 28)
-                            .background(.quaternary, in: .rect(cornerRadius: 7))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(project.label).font(.body).lineLimit(1)
-                            HStack(spacing: 4) {
-                                Text("\(project.sessionCount) conversation\(project.sessionCount == 1 ? "" : "s")")
-                                if let when = project.lastActive { Text("·"); Text(when, format: .relative(presentation: .named)) }
-                            }
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }
-                }
+                // Value routing shares the phone's chat path and stays in the iPad sidebar.
+                NavigationLink(value: ProjectRoute(id: project.id)) { projectRow(project) }
                 .accessibilityHint("Shows this project's sessions")
             }
             }
@@ -291,6 +214,23 @@ struct ConversationsList: View {
             .buttonStyle(.plain)
             .accessibilityLabel(showProjects ? "Hide projects" : "Show projects")
             .accessibilityAddTraits(.isHeader)
+        }
+    }
+
+    private func projectRow(_ project: HermesServeClient.Project) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: project.isHome ? "house.fill" : "folder.fill")
+                .foregroundStyle(project.isHome ? Color.orange : Settings.shared.resolvedTheme.accent)
+                .frame(width: 28, height: 28)
+                .background(.quaternary, in: .rect(cornerRadius: 7))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(project.label).font(.body).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text("\(project.sessionCount) conversation\(project.sessionCount == 1 ? "" : "s")")
+                    if let when = project.lastActive { Text("·"); Text(when, format: .relative(presentation: .named)) }
+                }
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
         }
     }
 
@@ -356,7 +296,7 @@ struct ConversationsList: View {
         if let ledgerError, ledger.isEmpty {
             ConnectionProblemCard(message: ledgerError,
                                   retry: { Task { await refresh() } },
-                                  openSettings: { showSettings = true })
+                                  openSettings: onOpenSettings)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
         } else if let ledgerError {
@@ -397,7 +337,7 @@ struct ConversationsList: View {
                 }
                 .tint(.orange)
             }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) { delete(session) } label: { Label("Delete", systemImage: "trash") }
                 Button { archive(session) } label: { Label("Archive", systemImage: "archivebox") }
                     .tint(.gray)
@@ -715,7 +655,6 @@ struct ProjectSessionsView: View {
     let open: (HermesSessionsAPI.SessionSummary) async throws -> Void
     let currentID: String?
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.sidePanelParked) private var panelParked
     @State private var lanes: [HermesServeClient.Project.Lane] = []
     @State private var error: String?
     @State private var loading = true
@@ -756,7 +695,6 @@ struct ProjectSessionsView: View {
         }
         .listStyle(.plain)
         .navigationTitle(project.label)
-        .toolbarVisibility(panelParked ? .hidden : .automatic, for: .navigationBar)
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "Search in \(project.label)")
         .overlay { if loading { ProgressView() } }

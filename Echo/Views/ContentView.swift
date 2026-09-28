@@ -11,10 +11,13 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var draft = ""
-    @State private var showSettings = false
+    private enum AppTab: Hashable { case chat, cron, kanban, settings }
+    @State private var selectedTab: AppTab = .chat
     @State private var shareItem: ShareItem?
     @State private var showSetup = false
-    @State private var showConversations = false
+    private enum ChatRoute: Hashable { case transcript }
+    @State private var chatPath = NavigationPath()
+    @State private var hasOpenedConversation = false
     /// What's New was up when voice mode was asked for: voice wins, and it comes back after.
     @State private var deferredWhatsNew: WhatsNew.Release?
     @State private var showVoice = false
@@ -34,25 +37,36 @@ struct ContentView: View {
     #endif
 
     var body: some View {
-        Group {
-            if sizeClass == .regular {
-                // iPad: sessions in the sidebar, transcript in the detail column.
-                NavigationSplitView {
-                    // The stack is what lets a project folder push its session list *inside*
-                    // the sidebar. Without it the NavigationLink has nowhere to go: the row
-                    // does nothing and there is no back button to escape with.
-                    NavigationStack {
-                        ConversationsList()
-                    }
-                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 420)
-                } detail: {
-                    transcriptScreen(showListButton: false)
+        TabView(selection: $selectedTab) {
+            Tab("Chat", systemImage: "bubble.left.and.bubble.right", value: AppTab.chat) {
+                chatLayout
+            }
+            Tab("Cron", systemImage: "clock", value: AppTab.cron) {
+                NavigationStack {
+                    CronView(isShowing: selectedTab == .cron)
+                        .id(settings.connectionKey)
+                        .navigationTitle("Cron")
                 }
-            } else {
-                phoneLayout
+            }
+            Tab("Kanban", systemImage: "rectangle.split.3x1", value: AppTab.kanban) {
+                NavigationStack {
+                    KanbanView(onOpenChat: openTranscript)
+                        .id(settings.connectionKey)
+                        .navigationTitle("Kanban")
+                }
+            }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                SettingsView(showDoneButton: false)
             }
         }
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .tabViewStyle(.tabBarOnly)
+        .background { tabShortcuts }
+        .onChange(of: selectedTab) { _, tab in
+            if tab != .chat { composerFocused = false }
+        }
+        .onChange(of: chatPath.count) { _, count in
+            if count == 0 { hasOpenedConversation = false; composerFocused = false }
+        }
         .sheet(isPresented: $showModelPicker) { NavigationStack { ModelPickerView() }.presentationDetents([.medium, .large]) }
         .sheet(isPresented: $showSetup) { SetupView() }
         .sheet(item: $whatsNew) { WhatsNewView(release: $0) }
@@ -128,7 +142,7 @@ struct ContentView: View {
         }
     }
 
-    private func transcriptScreen(showListButton: Bool) -> some View {
+    private var transcriptScreen: some View {
         TranscriptView(showSetup: $showSetup, showSearch: $showSearch, onEdit: beginEditing, onEditQueued: editQueued)
             .background(theme.background ?? Color(.systemBackground))
             .foregroundStyle(theme.text ?? Color.primary)
@@ -166,12 +180,6 @@ struct ContentView: View {
                     .accessibilityLabel("\(headerTitle). Model: \(modelChipLabel)")
                     .accessibilityHint("Choose which model answers")
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    if showListButton {
-                        Button("Conversations", systemImage: "list.bullet") { setDrawer(open: true) }
-                            .keyboardShortcut("k", modifiers: .command)
-                    }
-                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
                         Button("Find in conversation", systemImage: "magnifyingglass") { withAnimation { showSearch.toggle() } }
@@ -182,8 +190,6 @@ struct ContentView: View {
                             }
                         }
                         .disabled(conversation.messages.isEmpty)
-                        Divider()
-                        Button("Settings", systemImage: "gearshape") { showSettings = true }
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
@@ -191,34 +197,87 @@ struct ContentView: View {
                         conversation.reset()
                     }
                     .disabled(conversation.messages.isEmpty)
-                    .keyboardShortcut("n", modifiers: .command)
                 }
             }
             .sheet(item: $shareItem) { ShareSheet(items: [$0.url]) }
             .background { keyboardShortcuts }
     }
 
-    // MARK: - iPhone conversation list
-
-    /// iPhone: the chat, with the conversation list in a panel that slides in from the left.
-    private var phoneLayout: some View {
-        SidePanel(isOpen: $showConversations, onOpening: { composerFocused = false }) {
-            NavigationStack { transcriptScreen(showListButton: true) }
-        } panel: {
-            ConversationsView(isShowing: showConversations, onOpened: { setDrawer(open: false) })
+    private var chatLayout: some View {
+        Group {
+            if sizeClass == .regular {
+                // iPad: sessions in the sidebar, transcript in the detail column.
+                NavigationSplitView {
+                    // The stack is what lets a project folder push its session list *inside*
+                    // the sidebar. Without it the NavigationLink has nowhere to go: the row
+                    // does nothing and there is no back button to escape with.
+                    NavigationStack {
+                        ConversationsList(onOpened: openTranscript,
+                                          onOpenSettings: { selectedTab = .settings },
+                                          isShowing: selectedTab == .chat)
+                    }
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 420)
+                } detail: {
+                    if hasOpenedConversation {
+                        transcriptScreen
+                    } else {
+                        ContentUnavailableView("Select a conversation", systemImage: "bubble.left.and.bubble.right",
+                                               description: Text("Choose a chat from the list or start a new conversation."))
+                    }
+                }
+            } else {
+                phoneLayout
+            }
         }
     }
 
-    private func setDrawer(open: Bool) {
-        if open { composerFocused = false }
-        withAnimation(.sidePanel) { showConversations = open }
+    private var tabShortcuts: some View {
+        Group {
+            Button("Chat") { selectedTab = .chat }.keyboardShortcut("1", modifiers: .command)
+            Button("Conversations") { showConversationList() }.keyboardShortcut("k", modifiers: .command)
+            Button("New conversation") { conversation.reset(); openTranscript() }
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(selectedTab != .chat)
+            Button("Cron") { selectedTab = .cron }.keyboardShortcut("2", modifiers: .command)
+            Button("Kanban") { selectedTab = .kanban }.keyboardShortcut("3", modifiers: .command)
+            Button("Settings") { selectedTab = .settings }.keyboardShortcut("4", modifiers: .command)
+            Button("Settings") { selectedTab = .settings }.keyboardShortcut(",", modifiers: .command)
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    // MARK: - iPhone conversation list
+
+    /// Conversations are the root; the system Back button and swipe return from a chat.
+    private var phoneLayout: some View {
+        NavigationStack(path: $chatPath) {
+            ConversationsView(isShowing: selectedTab == .chat && chatPath.isEmpty,
+                              onOpened: openTranscript, onOpenSettings: { selectedTab = .settings })
+                .navigationDestination(for: ChatRoute.self) { _ in
+                    transcriptScreen
+                }
+        }
+    }
+
+    private func openTranscript() {
+        selectedTab = .chat
+        hasOpenedConversation = true
+        chatPath = NavigationPath([ChatRoute.transcript])
+    }
+
+    private func showConversationList() {
+        selectedTab = .chat
+        composerFocused = false
+        hasOpenedConversation = false
+        chatPath = NavigationPath()
     }
 
     /// Hardware-keyboard shortcuts (iPad, Mac). Zero-size buttons still receive key equivalents,
     /// and they show up in the ⌘ overlay with these titles.
     private var keyboardShortcuts: some View {
         Group {
-            Button("Settings") { showSettings = true }.keyboardShortcut(",", modifiers: .command)
             Button("Voice mode") { openVoice() }.keyboardShortcut("v", modifiers: [.command, .shift])
             Button("Focus composer") { composerFocused = true }.keyboardShortcut("l", modifiers: .command)
             Button("Find in conversation") { withAnimation { showSearch.toggle() } }.keyboardShortcut("f", modifiers: .command)
@@ -232,7 +291,7 @@ struct ContentView: View {
         .frame(width: 0, height: 0)
         .opacity(0)
         .accessibilityHidden(true)
-        .disabled(showConversations)   // the chat is behind the iPhone's conversation list then
+        .disabled(selectedTab != .chat || !hasOpenedConversation)
     }
 
     /// The header's first line: this conversation, or "New conversation" before the first message.
@@ -250,6 +309,7 @@ struct ContentView: View {
 
     /// Voice mode as you'd open it by hand: Hands-free follows Settings → Voice.
     private func openVoice() {
+        openTranscript()
         voiceSession.continuous = settings.handsFreeByDefault
         startFreshForVoice()
         showVoice = true
@@ -274,7 +334,7 @@ struct ContentView: View {
             // The inbox decodes off the main actor; the lock can have engaged meanwhile.
             guard let payload = await ShareInbox.takePending(), !payload.isEmpty, !lock.isLocked else { return }
             showVoice = false
-            setDrawer(open: false)   // the composer is under the conversation list
+            openTranscript()
             let text = payload.draft
             if !text.isEmpty { draft = draft.isEmpty ? text : draft + "\n\n" + text }
             pendingAttachments += payload.attachments
@@ -286,7 +346,7 @@ struct ContentView: View {
     private func handleDraftRequest() {
         guard !lock.isLocked, let request = router.consumeDraftRequest() else { return }
         showVoice = false
-        setDrawer(open: false)   // the composer is under the conversation list
+        openTranscript()
         if !request.text.isEmpty { draft = draft.isEmpty ? request.text : draft + "\n\n" + request.text }
         pendingAttachments += request.attachments
         composerFocused = true
@@ -307,6 +367,7 @@ struct ContentView: View {
     /// Voice mode asked for in a specific mode (the hands-free button, Siri, a control): that mode
     /// wins over the Settings default.
     private func launchVoice(handsFree: Bool) async {
+        openTranscript()
         voiceSession.continuous = handsFree
         if !showVoice {
             startFreshForVoice()
@@ -329,8 +390,9 @@ struct ContentView: View {
     private func applyDevHooks() {
         DevHooks.applyAtLaunch(conversation: conversation, settings: settings)
         switch DevHooks.value("-echo.screen") {
-        case "settings": showSettings = true
-        case "sessions": showConversations = true
+        case "settings": selectedTab = .settings
+        case "sessions": showConversationList()
+        case "chat": openTranscript()
         case "setup": showSetup = true
         case "profiles": showProfilePicker = true
         case "servers": showServers = true
@@ -338,7 +400,13 @@ struct ContentView: View {
         case "tips": showTips = true
         default: break
         }
+        switch DevHooks.value("-echo.section") {
+        case "cron": selectedTab = .cron
+        case "kanban": selectedTab = .kanban
+        default: break
+        }
         if let text = DevHooks.value("-echo.draft") {
+            openTranscript()
             draft = text
             Task { try? await Task.sleep(for: .milliseconds(450)); composerFocused = true }
         }

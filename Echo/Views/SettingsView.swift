@@ -3,6 +3,7 @@ import SwiftUI
 /// The settings form. Each section is its own view, so typing in one field re-evaluates that
 /// section rather than the whole form. The two Keychain flags several sections gate on live here.
 struct SettingsView: View {
+    var showDoneButton = true
     @Environment(\.dismiss) private var dismiss
     @State private var showSetup = false
     @State private var hasStoredKey = false
@@ -62,7 +63,9 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    if showDoneButton { Button("Done") { dismiss() } }
+                }
             }
             .sensoryFeedback(.success, trigger: secretSaved)
         }

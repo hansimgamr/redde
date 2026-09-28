@@ -3,12 +3,13 @@ import SwiftUI
 /// The Hermes kanban board (dashboard plugin on hermes serve): one column at a time on the
 /// phone, cards as rows, moves via a status picker.
 struct KanbanView: View {
+    var onOpenChat: () -> Void = {}
     @Environment(\.theme) private var theme
     /// Last kanban live-event id seen; the live socket resumes from here.
     @State private var latestEventID = 0
     @State private var columns: [KanbanColumn] = []
     @State private var assignees: [String] = []
-    /// Kept across rebuilds (the board goes away while the iPhone's panel is closed).
+    /// Restore the selected column when returning to the board.
     @SceneStorage("kanban.column") private var selected = "todo"
     @State private var error: String?
     @State private var loading = false
@@ -26,12 +27,9 @@ struct KanbanView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private var column: KanbanColumn? { columns.first { $0.name == selected } }
-    /// The conversation list's server and section switch, scrolling away above the column bar.
-    var topRow: AnyView?
 
     var body: some View {
         List {
-            if let topRow { topRow }
             // A pinned header, not a row above the list: the sheet's toolbar gave its top inset to
             // the first scroll view it found, the columns' own, which pushed them out of sight.
             Section {
@@ -76,7 +74,7 @@ struct KanbanView: View {
         .listStyle(.plain)
         .toast($toast, duration: .seconds(4))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("New card", systemImage: "plus") { creating = true }.disabled(!available)
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -98,13 +96,16 @@ struct KanbanView: View {
         .onAppear { visible = true }
         .onDisappear { visible = false; live.stop() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await refresh(); if visible { startLive() } } } else { live.stop() }
+            if phase == .active {
+                guard visible else { return }
+                Task { await refresh(); if visible { startLive() } }
+            } else { live.stop() }
         }
         .refreshable { await refresh() }
         .sheet(isPresented: $creating) { KanbanCardEditor(task: nil, assignees: assignees) { await refresh() } }
         .sheet(item: $editing) { task in KanbanCardEditor(task: task, assignees: assignees) { await refresh() } }
         .sheet(item: Binding(get: { detailID.map { IDBox(id: $0) } }, set: { detailID = $0?.id })) { box in
-            KanbanCardDetail(taskID: box.id, assignees: assignees) { await refresh() }
+            KanbanCardDetail(taskID: box.id, assignees: assignees, onOpenChat: onOpenChat) { await refresh() }
         }
         .alert(moveTitle, isPresented: Binding(get: { moving != nil }, set: { if !$0 { moving = nil } })) {
             TextField(movePlaceholder, text: $moveNote)
@@ -333,6 +334,7 @@ struct KanbanCardEditor: View {
 struct KanbanCardDetail: View {
     let taskID: String
     var assignees: [String] = []
+    var onOpenChat: () -> Void = {}
     let onChange: () async -> Void
     @State private var editing = false
     @State private var pendingStatus: String?
@@ -380,6 +382,7 @@ struct KanbanCardDetail: View {
                     Section {
                         Button("Ask Redde about this card", systemImage: "bubble.left.and.text.bubble.right") {
                             dismiss()
+                            onOpenChat()
                             conversation.send("About kanban card “\(task.title)” (\(task.id)): \(task.body ?? "")\n\nWhat's the status, and what should happen next?")
                         }
                     }

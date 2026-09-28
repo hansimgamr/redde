@@ -26,8 +26,8 @@ final class PromoVideoUITests: XCTestCase {
 
     /// Answers with substance: read up through the checklist, table, diagram and math.
     func testRichAnswers() throws {
-        let app = try launch(["-echo.demo", "-theme", "claudeCode", "-appearance", "dark"])
-        XCTAssertTrue(app.buttons["Conversations"].waitForExistence(timeout: 20))
+        let app = try launch(["-echo.screen", "chat", "-echo.demo", "-theme", "claudeCode", "-appearance", "dark"])
+        XCTAssertTrue(app.buttons["New conversation"].waitForExistence(timeout: 20))
         // Diagrams and math draw when they first scroll into view: pass over them all once, then
         // start the take from the top of the transcript.
         for _ in 0..<4 { drag(app, from: CGVector(dx: 0.5, dy: 0.8), to: CGVector(dx: 0.5, dy: 0.2), velocity: .fast); hold(0.8) }
@@ -44,18 +44,17 @@ final class PromoVideoUITests: XCTestCase {
         mark("end")
     }
 
-    /// Every chat, cron job and board: swipe the conversations in, then open the Kanban board.
+    /// Browse conversation history, then open the Kanban tab.
     func testConversationsAndKanban() throws {
         let app = try launch(["-echo.demo", "-echo.demoLibrary", "-echo.demoKanban", "-theme", "claudeCode", "-appearance", "dark"])
-        XCTAssertTrue(app.buttons["Conversations"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.navigationBars["Conversations"].waitForExistence(timeout: 20))
         hold(2.5)
         mark("start")
         hold(0.7)
-        drag(app, from: CGVector(dx: 0.08, dy: 0.5), to: CGVector(dx: 0.85, dy: 0.52), velocity: 700)
-        hold(1.6)
-        // By position: the Kanban segment in the panel's first row. (Accessibility lookups found
-        // the hidden ⌘3 shortcut button of the same name, or nothing.)
-        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.69, dy: 0.262)).tap()
+        let kanban = app.buttons.matching(NSPredicate(format: "label == 'Kanban'"))
+            .allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(kanban)
+        kanban?.tap()
         hold(2.4)
         mark("end")
     }
